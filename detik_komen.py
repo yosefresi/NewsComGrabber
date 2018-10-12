@@ -7,10 +7,10 @@ import argparse
 import time
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-c', '--count', help='# of comments grabbed per post, default: 9999', type=int, default=9999)
+parser.add_argument('-c', '--count', help='# of comments grabbed per post, default: 100', type=int, default=100)
 parser.add_argument('-p', '--page', help='# of pages crawled, default: 0 (all page)', type=int, default=0)
 parser.add_argument('-s', '--start', help='start from this page number, default: 1', type=int, default=1)
-parser.add_argument('-d', '--delay', help='delay between crawl (in seconds), default: 0', type=int, default=0)
+parser.add_argument('-d', '--delay', help='delay between crawl (in seconds), default: 0', type=float, default=0)
 args = parser.parse_args()
 if args.delay is not None:
     delay = args.delay
@@ -20,10 +20,11 @@ class CommentSpider(scrapy.Spider):
     name = "detik"
     history = {}
     current_page_domain = 'https://www.detik.com/pemilu/'
-    current_page_num = ''
+    current_page_num = 0
     comment_count = 9999
     page_count = 0
     start_from = 1
+    req_error = False
     if args.count is not None:
         comment_count = args.count
     if args.page is not None:
@@ -47,9 +48,9 @@ class CommentSpider(scrapy.Spider):
         print(self.current_page_domain + str(self.current_page_num))
         if response.status == 302:
             print('====================================')
-            print('Redirect detected, waiting 5 seconds to retry')
+            print('Redirect detected, waiting 10 seconds to retry')
             print('====================================')
-            time.sleep(5)
+            time.sleep(10)
             yield scrapy.Request(self.current_page_domain + str(self.current_page_num), self.parse, dont_filter=True)
 
         # buka file history untuk melihat progress sebelumnya (jika ada)
@@ -76,6 +77,12 @@ class CommentSpider(scrapy.Spider):
             if url_part[1] == 'berita':
                 url_part[2] = url_part[2][2:]
                 self.get_next_page_comment(url_part[2])
+                while self.req_error:
+                    print('====================================')
+                    print('error grabbing from internal API, waiting 10 seconds to retry')
+                    print('====================================')
+                    time.sleep(10)
+                    self.get_next_page_comment(url_part[2])
                 time.sleep(delay)
 
         # stop condition
@@ -96,25 +103,34 @@ class CommentSpider(scrapy.Spider):
                                                                                 'paging counterparent hits{'
                                                                                 'posisi results{'
                                                                                 'id content news create_date}}}}')
-        py_obj = JSONDecoder().decode(res.text)
-        result = py_obj.get('data').get('search').get('hits').get('results')
-
-        for r in result:
-            with open('data.csv', 'a', encoding='utf-8') as myfile:
-                if article_id in self.history:
-                    if r.get('id') != self.history[article_id]:
+        if res.status_code != 200:
+            self.req_error = True
+            return
+        else:
+            self.req_error = False
+            py_obj = JSONDecoder().decode(res.text)
+        try:
+            result = py_obj.get('data').get('search').get('hits').get('results')
+            for r in result:
+                with open('data.csv', 'a', encoding='utf-8') as myfile:
+                    if article_id in self.history:
+                        if r.get('id') != self.history[article_id]:
+                            try:
+                                myfile.write(article_id + ';' + r.get('news').get('date') + ';' + r.get('content') + ';'
+                                             + r.get('create_date') + '\n')
+                            except: pass
+                        else: break
+                    else:
                         try:
                             myfile.write(article_id + ';' + r.get('news').get('date') + ';' + r.get('content') + ';'
                                          + r.get('create_date') + '\n')
-                        except: pass
-                    else: break
-                else:
-                    try:
-                        myfile.write(article_id + ';' + r.get('news').get('date') + ';' + r.get('content') + ';'
-                                     + r.get('create_date') + '\n')
-                        self.history[article_id] = r.get('id')
-                    except:
-                        pass
+                            self.history[article_id] = r.get('id')
+                        except:
+                            pass
+            self.req_error = False
+        except:
+            self.req_error = True
+            return
 
         with open('history.csv', 'w') as history_file:
             for key, value in self.history.items():
@@ -124,8 +140,8 @@ class CommentSpider(scrapy.Spider):
 process = CrawlerProcess({
     'DOWNLOAD_DELAY': delay,
     'DOWNLOADER_MIDDLEWARES': {
-        # 'scrapy.downloadermiddlewares.redirect.RedirectMiddleware': None,
-        # 'scrapy.downloadermiddlewares.redirect.MetaRefreshMiddleware': None,
+        'scrapy.downloadermiddlewares.redirect.RedirectMiddleware': None,
+        'scrapy.downloadermiddlewares.redirect.MetaRefreshMiddleware': None,
     },
     # 'RETRY_HTTP_CODES': [500, 502, 503, 504, 408, 302],
     'HTTPERROR_ALLOW_ALL': True,
@@ -133,4 +149,4 @@ process = CrawlerProcess({
 process.crawl(CommentSpider)
 process.start()
 
-# stop condition for last page
+
